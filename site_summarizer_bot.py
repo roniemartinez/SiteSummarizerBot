@@ -9,81 +9,159 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 
+import praw
 from goose3 import Goose
-from praw.models import Submission
+from praw.models import Submission, Comment
 from rfc3986 import is_valid_uri
 from summarize import summarize
 
 from client import get_redis_client
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
-
-retry_pattern = re.compile(r'again in (?P<number>[0-9]+) (?P<unit>\w+)s?\.$', re.IGNORECASE)
+retry_pattern = re.compile(r'again in ([0-9]+) (\w+)\.$', re.IGNORECASE)
 
 message_format = """
-Title: {title}
+### {title}
 
-Summary: {summary}
+### Summary:
 
----------
+{summary}
+
+------------------------------------------------------------
 I am a bot that summarizes content of a URL-only submission!
 """
 
 
-def handle_rate_limit(exc):
-    time_map = {
+def handle_rate_limit(message):
+    multiplier = {
         'second': 1,
+        'seconds': 1,
         'minute': 60,
+        'minutes': 60,
         'hour': 60 * 60,
+        'hours': 60 * 60,
     }
-    matches = retry_pattern.search(exc.message)
-    delay = int(matches[0]) * time_map[matches[1]]
-    time.sleep(delay + 1)
+    matches = retry_pattern.search(message)
+    delay = (int(matches[1]) * multiplier[matches[2]]) + 1
+    logging.info(f'Sleeping for {delay} seconds')
+    time.sleep(delay)
 
 
-def main():
-    import praw
-    reddit = praw.Reddit(
+def get_url(submission: Submission):
+    url = None
+    if submission.is_self:
+        text = submission.selftext.strip()
+        if len(text) and is_valid_uri(text, require_scheme=True):
+            url = text
+            logging.info(f'URL found in submission {submission.id}: {url}')
+        else:
+            logging.info(f'URL not found in submission {submission.id}')
+    else:
+        url = submission.url
+        logging.info(f'URL found in submission {submission.id}: {url}')
+    return url
+
+
+def submissions():
+    reddit = get_reddit()
+    redis_client = get_redis_client()
+    logging.info('Listening to submission stream')
+    for submission in reddit.subreddit('SiteSummarizerBot').stream.submissions(skip_existing=True):  # type: Submission
+
+        replied_key = f"replied:submission:{submission.id}"
+        if redis_client.exists(replied_key):
+            logging.info(f'Already replied to submission {submission.id}')
+            continue
+
+        url = get_url(submission)
+        title, summary = extract_summary(url)
+
+        if len(summary):
+            while True:
+                try:
+                    message = message_format.format(title=title, summary=summary)
+                    submission.reply(message)
+                    redis_client.set(replied_key, time.time())
+                    logging.info(f'Commented summary to submission {submission.id}')
+                    break
+                except praw.exceptions.APIException as e:
+                    if e.error_type == 'RATELIMIT':
+                        logging.info('RATELIMIT detected')
+                        handle_rate_limit(e.message)
+                    else:
+                        logging.exception(e)
+                        break
+        else:
+            logging.info(f'Cannot find contents in URL: {url}')
+
+
+def extract_summary(url):
+    g = Goose({'strict': False})
+    article = g.extract(url=url)
+    summary = summarize(article.cleaned_text).strip()
+    return article.title, summary
+
+
+def get_reddit():
+    return praw.Reddit(
         client_id=os.getenv('CLIENT_ID'),
         client_secret=os.getenv('CLIENT_SECRET'),
         username=os.getenv('BOT_USERNAME'),
         password=os.getenv('BOT_PASSWORD'),
         user_agent=os.getenv('BOT_USER_AGENT'),
     )
+
+
+def mentions():
+    reddit = get_reddit()
     redis_client = get_redis_client()
-    for submission in reddit.subreddit('SiteSummarizerBot').stream.submissions(skip_existing=True):  # type: Submission
-        text = submission.selftext.strip()
-        url = None
-        if is_valid_uri(text, require_scheme=True):
-            url = text
-        else:
-            continue
-        replied_key = f"replied:{submission.id}"
-        if url and not redis_client.exists(replied_key):
-            logging.info(f'URL found in submission {submission.id}, extracting summary: {url}')
-            g = Goose({'strict': False})
-            article = g.extract(url=url)
+    logging.info('Listening to mentions')
+    while True:
+        for mention in reddit.inbox.mentions(limit=None):  # type: Comment
+            mention.mark_read()
+            submission = mention.submission  # type: Submission
 
-            summary = summarize(article.cleaned_text).strip()
+            replied_key = f"replied:comment:{mention.id}"
+            if redis_client.exists(replied_key):
+                logging.info(f'Already replied to mention {mention.id}')
+                continue
+
+            url = get_url(submission)
+            title, summary = extract_summary(url)
+
             if len(summary):
-                try:
-                    message = message_format.format(title=article.title, summary=summary)
-                    logging.info(message)
-                    # submission.reply(message)
-                except praw.exceptions.ApiException as e:
-                    if e.error_type == 'RATELIMIT':
-                        handle_rate_limit(e)
-                    else:
-                        logging.exception(e)
-                        raise
-
-                redis_client.set(replied_key, time.time())
-                logging.info(f'Commented summary to submission {submission.id}')
+                while True:
+                    try:
+                        message = message_format.format(title=title, summary=summary)
+                        mention.reply(message)
+                        redis_client.set(replied_key, time.time())
+                        logging.info(f'Replied summary to mention {mention.id}')
+                        break
+                    except praw.exceptions.APIException as e:
+                        if e.error_type == 'RATELIMIT':
+                            logging.info('RATELIMIT detected')
+                            handle_rate_limit(e.message)
+                        else:
+                            logging.exception(e)
+                            break
             else:
-                logging.info(f"Cannot find contents in URL: {url}")
+                logging.info(f'Cannot find contents in URL: {url}')
+            time.sleep(60)
+
+
+def main():
+    threads = [
+        threading.Thread(target=submissions),
+        threading.Thread(target=mentions)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
 
 
 if __name__ == '__main__':
