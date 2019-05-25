@@ -2,7 +2,11 @@
 
 A bot that summarizes content of a URL-only submission
 
+
+## Setup
+
 ```bash
+pip install -r requirements.txt
 python -m nltk.downloader stopwords punkt
 ```
 
