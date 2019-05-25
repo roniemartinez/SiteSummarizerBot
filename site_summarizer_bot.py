@@ -155,6 +155,7 @@ def mentions():
 
 def downvote_deleter():
     reddit = get_reddit()
+    logging.info('Listening to downvotes')
     user = Redditor(reddit, 'SiteSummarizerBot')
     for comment in stream_generator(user.comments.new):  # type: Comment
         if comment.score < 1:
