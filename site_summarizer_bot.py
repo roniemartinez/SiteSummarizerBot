@@ -79,25 +79,26 @@ def submissions():
             continue
 
         url = get_url(submission)
-        title, summary = extract_summary(url)
+        if url:
+            title, summary = extract_summary(url)
 
-        if len(summary):
-            while True:
-                try:
-                    message = message_format.format(title=title, summary=summary)
-                    submission.reply(message)
-                    redis_client.set(replied_key, time.time())
-                    logging.info(f'Commented summary to submission {submission.id}')
-                    break
-                except praw.exceptions.APIException as e:
-                    if e.error_type == 'RATELIMIT':
-                        logging.info('RATELIMIT detected')
-                        handle_rate_limit(e.message)
-                    else:
-                        logging.exception(e)
+            if len(summary):
+                while True:
+                    try:
+                        message = message_format.format(title=title, summary=summary)
+                        submission.reply(message)
+                        redis_client.set(replied_key, time.time())
+                        logging.info(f'Commented summary to submission {submission.id}')
                         break
-        else:
-            logging.info(f'Cannot find contents in URL: {url}')
+                    except praw.exceptions.APIException as e:
+                        if e.error_type == 'RATELIMIT':
+                            logging.info('RATELIMIT detected')
+                            handle_rate_limit(e.message)
+                        else:
+                            logging.exception(e)
+                            break
+            else:
+                logging.info(f'Cannot find contents in URL: {url}')
 
 
 def extract_summary(url):
@@ -131,25 +132,26 @@ def mentions():
             continue
 
         url = get_url(submission)
-        title, summary = extract_summary(url)
+        if url:
+            title, summary = extract_summary(url)
 
-        if len(summary):
-            while True:
-                try:
-                    message = message_format.format(title=title, summary=summary)
-                    mention.reply(message)
-                    redis_client.set(replied_key, time.time())
-                    logging.info(f'Replied summary to mention {mention.id}')
-                    break
-                except praw.exceptions.APIException as e:
-                    if e.error_type == 'RATELIMIT':
-                        logging.info('RATELIMIT detected')
-                        handle_rate_limit(e.message)
-                    else:
-                        logging.exception(e)
+            if len(summary):
+                while True:
+                    try:
+                        message = message_format.format(title=title, summary=summary)
+                        mention.reply(message)
+                        redis_client.set(replied_key, time.time())
+                        logging.info(f'Replied summary to mention {mention.id}')
                         break
-        else:
-            logging.info(f'Cannot find contents in URL: {url}')
+                    except praw.exceptions.APIException as e:
+                        if e.error_type == 'RATELIMIT':
+                            logging.info('RATELIMIT detected')
+                            handle_rate_limit(e.message)
+                        else:
+                            logging.exception(e)
+                            break
+            else:
+                logging.info(f'Cannot find contents in URL: {url}')
     time.sleep(60)
 
 
