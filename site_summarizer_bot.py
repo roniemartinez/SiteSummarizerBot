@@ -171,11 +171,15 @@ def downvote_deleter():
     logging.info('Monitoring downvotes')
     while True:
         for comment_id in redis_client.smembers('comments'):
-            comment = Comment(reddit, id=comment_id)
-            if comment.score < 1:
-                comment.delete()
-                redis_client.srem('comments', comment_id)
-                logging.info(f'Removed downvoted comment {comment.id}')
+            try:
+                comment = Comment(reddit, id=comment_id.decode('utf-8'))  # redis-py bug, not decoding to UTF-8
+                if comment.score < 1:
+                    comment.delete()
+                    redis_client.srem('comments', comment_id)
+                    logging.info(f'Removed downvoted comment {comment.id}')
+            except praw.exceptions.PRAWException as e:
+                logging.exception(e)
+        time.sleep(60)
 
 
 def main():
