@@ -24,6 +24,7 @@ from client import get_redis_client
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
 retry_pattern = re.compile(r'again in ([0-9]+) (\w+)\.$', re.IGNORECASE)
+markdown_link_pattern = re.compile(r'\[.+\]\((.+)\)', re.IGNORECASE)
 
 message_format = """
 #### {title}
@@ -56,6 +57,13 @@ def get_url(submission: Submission):
     url = None
     if submission.is_self:
         text = submission.selftext.strip()
+        if text.startswith('['):
+            try:
+                text = markdown_link_pattern.search(text)[1]
+            except Exception as e:
+                logging.exception(e)
+                logging.info(f'URL not found in submission {submission.id}')
+                return url
         if len(text) and is_valid_uri(text, require_scheme=True):
             url = text
             logging.info(f'URL found in submission {submission.id}: {url}')
