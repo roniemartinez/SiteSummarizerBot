@@ -14,7 +14,8 @@ import time
 
 import praw
 from goose3 import Goose
-from praw.models import Submission, Comment
+from praw.models import Submission, Comment, Redditor
+from praw.models.util import stream_generator
 from rfc3986 import is_valid_uri
 from summarize import summarize
 
@@ -25,9 +26,9 @@ logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 retry_pattern = re.compile(r'again in ([0-9]+) (\w+)\.$', re.IGNORECASE)
 
 message_format = """
-### {title}
+#### {title}
 
-### Summary:
+#### Summary:
 
 {summary}
 
@@ -120,43 +121,52 @@ def mentions():
     reddit = get_reddit()
     redis_client = get_redis_client()
     logging.info('Listening to mentions')
-    while True:
-        for mention in reddit.inbox.mentions(limit=None):  # type: Comment
-            mention.mark_read()
-            submission = mention.submission  # type: Submission
+    for mention in stream_generator(reddit.inbox.mentions, skip_existing=True):  # type: Comment
+        mention.mark_read()
+        submission = mention.submission  # type: Submission
 
-            replied_key = f"replied:comment:{mention.id}"
-            if redis_client.exists(replied_key):
-                logging.info(f'Already replied to mention {mention.id}')
-                continue
+        replied_key = f"replied:comment:{mention.id}"
+        if redis_client.exists(replied_key):
+            logging.info(f'Already replied to mention {mention.id}')
+            continue
 
-            url = get_url(submission)
-            title, summary = extract_summary(url)
+        url = get_url(submission)
+        title, summary = extract_summary(url)
 
-            if len(summary):
-                while True:
-                    try:
-                        message = message_format.format(title=title, summary=summary)
-                        mention.reply(message)
-                        redis_client.set(replied_key, time.time())
-                        logging.info(f'Replied summary to mention {mention.id}')
+        if len(summary):
+            while True:
+                try:
+                    message = message_format.format(title=title, summary=summary)
+                    mention.reply(message)
+                    redis_client.set(replied_key, time.time())
+                    logging.info(f'Replied summary to mention {mention.id}')
+                    break
+                except praw.exceptions.APIException as e:
+                    if e.error_type == 'RATELIMIT':
+                        logging.info('RATELIMIT detected')
+                        handle_rate_limit(e.message)
+                    else:
+                        logging.exception(e)
                         break
-                    except praw.exceptions.APIException as e:
-                        if e.error_type == 'RATELIMIT':
-                            logging.info('RATELIMIT detected')
-                            handle_rate_limit(e.message)
-                        else:
-                            logging.exception(e)
-                            break
-            else:
-                logging.info(f'Cannot find contents in URL: {url}')
-            time.sleep(60)
+        else:
+            logging.info(f'Cannot find contents in URL: {url}')
+    time.sleep(60)
+
+
+def downvote_deleter():
+    reddit = get_reddit()
+    user = Redditor(reddit, 'SiteSummarizerBot')
+    for comment in stream_generator(user.comments.new):  # type: Comment
+        if comment.score < 1:
+            comment.delete()
+            logging.info(f'Removed downvoted comment {comment.id}')
 
 
 def main():
     threads = [
         threading.Thread(target=submissions),
-        threading.Thread(target=mentions)
+        threading.Thread(target=mentions),
+        threading.Thread(target=downvote_deleter)
     ]
     for thread in threads:
         thread.start()
