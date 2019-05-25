@@ -94,8 +94,9 @@ def submissions():
                 while True:
                     try:
                         message = message_format.format(title=title, summary=summary)
-                        submission.reply(message)
+                        comment = submission.reply(message)
                         redis_client.set(replied_key, time.time())
+                        redis_client.sadd('comments', comment.id)
                         logging.info(f'Commented summary to submission {submission.id}')
                         break
                     except praw.exceptions.APIException as e:
@@ -147,8 +148,9 @@ def mentions():
                 while True:
                     try:
                         message = message_format.format(title=title, summary=summary)
-                        mention.reply(message)
+                        comment = mention.reply(message)
                         redis_client.set(replied_key, time.time())
+                        redis_client.sadd('comments', comment.id)
                         logging.info(f'Replied summary to mention {mention.id}')
                         break
                     except praw.exceptions.APIException as e:
@@ -165,12 +167,15 @@ def mentions():
 
 def downvote_deleter():
     reddit = get_reddit()
-    logging.info('Listening to downvotes')
-    user = Redditor(reddit, 'SiteSummarizerBot')
-    for comment in stream_generator(user.comments.new):  # type: Comment
-        if comment.score < 1:
-            comment.delete()
-            logging.info(f'Removed downvoted comment {comment.id}')
+    redis_client = get_redis_client()
+    logging.info('Monitoring downvotes')
+    while True:
+        for comment_id in redis_client.smembers('comments'):
+            comment = Comment(reddit, id=comment_id)
+            if comment.score < 1:
+                comment.delete()
+                redis_client.srem('comments', comment_id)
+                logging.info(f'Removed downvoted comment {comment.id}')
 
 
 def main():
