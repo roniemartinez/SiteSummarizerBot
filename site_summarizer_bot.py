@@ -21,7 +21,7 @@ from summarize import summarize
 
 from client import get_redis_client
 
-logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
 retry_pattern = re.compile(r'again in ([0-9]+) (\w+)\.$', re.IGNORECASE)
 
